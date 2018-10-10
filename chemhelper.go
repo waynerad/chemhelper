@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"strconv"
 )
 
 type element struct {
@@ -14,21 +15,30 @@ type element struct {
 
 type isotope struct {
 	atomicNumber int
-	massNumber int
+	massNumber   int
 	isotopicMass float64
-	abundance float64
+	abundance    float64
 }
 
-type molele struct {
-	elementAtomicNumber int
+// A formele is a "formula element".
+// A formula like "2Hg + O2" has 2 formula elements, "2Hg" and "O2".
+// Formulas don't take into account molecular divisions.
+// They are used to obtain relative molecular weights and to make sure
+// equations balance.
+// If you need molecular distinctions, use molele/molecule.
+type formele struct {
+	coef          int
+	elementNumber int
 	numberOfAtoms int
 }
 
-type molecule struct {
-	components []molele
+type formula struct {
+	components []formele
 }
 
 const avogadrosNumber = 6.0221420e23
+
+const cm3perL = 1000
 
 func constructElementRelativeAtomicMassesTable() []element {
 	relativeAtomicMassesTable := []element{
@@ -153,7 +163,7 @@ func constructElementRelativeAtomicMassesTable() []element {
 func constructIsotopeRelativeMassesTable() []isotope {
 	relativeAtomicMassesTable := []isotope{
 		{6, 12, 12.0, 0.98892},
-		{6, 13, 13.003354, .01108} }
+		{6, 13, 13.003354, .01108}}
 	return relativeAtomicMassesTable
 }
 
@@ -197,11 +207,125 @@ func makeIsotopicMassesTableIndexes(isos []isotope) map[int]map[int]int {
 	for idx, isoInfo := range isos {
 		_, exists := isolookup[isoInfo.atomicNumber]
 		if !exists {
-		isolookup[isoInfo.atomicNumber] = make(map[int]int)
+			isolookup[isoInfo.atomicNumber] = make(map[int]int)
 		}
 		isolookup[isoInfo.atomicNumber][isoInfo.massNumber] = idx
 	}
 	return isolookup
+}
+
+func isRuneSpace(ch rune) bool {
+	return ch == 32
+}
+
+func isRunePlus(ch rune) bool {
+	return ch == 43
+}
+
+func isRuneNumeric(ch rune) bool {
+	return (ch >= 48) && (ch <= 58)
+}
+
+func isRuneLowercase(ch rune) bool {
+	return ch > 90
+}
+
+// generic error-checker -- substitute with particular error checker when
+// appropriate
+func checkError(err error, message string) {
+	if err == nil {
+		return
+	}
+	panic(message)
+}
+
+func strToInt(str string) int {
+	result, err := strconv.ParseInt(str, 10, 32)
+	checkError(err, "cannot parse as int")
+	return int(result)
+}
+
+func makeFormele(elemTable []element, symbolTable map[string]int, coef string, elementSymbol string, atomCount string) formele {
+	if coef == "" {
+		coef = "1"
+	}
+	if atomCount == "" {
+		atomCount = "1"
+	}
+	var result formele
+	result.coef = strToInt(coef)
+	result.elementNumber = elemTable[symbolTable[elementSymbol]].atomicNumber
+	result.numberOfAtoms = strToInt(atomCount)
+	return result
+}
+
+func parseFormula(elemTable []element, symbolTable map[string]int, fmla string) formula {
+	var result formula
+	// formulas look like: 2Hg + O2
+	inCoef := true
+	coefStr := ""
+	symbolStr := ""
+	countStr := ""
+	for _, char := range fmla {
+		if isRuneSpace(char) || isRunePlus(char) {
+			if isRunePlus(char) {
+				fmele := makeFormele(elemTable, symbolTable, coefStr, symbolStr, countStr)
+				result.components = append(result.components, fmele)
+				inCoef = true
+				coefStr = ""
+				symbolStr = ""
+			}
+		} else {
+			if isRuneNumeric(char) {
+				if inCoef {
+					coefStr += string(char)
+				} else {
+					countStr += string(char)
+				}
+			} else {
+				if isRuneLowercase(char) {
+					symbolStr += string(char)
+				} else {
+					if symbolStr != "" {
+						// we need to push a previous symbol
+						fmele := makeFormele(elemTable, symbolTable, coefStr, symbolStr, countStr)
+						result.components = append(result.components, fmele)
+					}
+					symbolStr = string(char)
+					inCoef = false
+					countStr = ""
+				}
+			}
+		}
+	}
+	// handle final symbol at end
+	if symbolStr != "" {
+		fmele := makeFormele(elemTable, symbolTable, coefStr, symbolStr, countStr)
+		result.components = append(result.components, fmele)
+	}
+	return result
+}
+
+func countFormulaAtoms(fmla formula) map[int]int {
+	result := make(map[int]int)
+	for _, fmele := range(fmla.components) {
+		_, ok := result[fmele.elementNumber]
+		if ok {
+			result[fmele.elementNumber] += fmele.coef * fmele.numberOfAtoms
+		} else {
+			result[fmele.elementNumber] = fmele.coef * fmele.numberOfAtoms
+		}
+	}
+	return result
+}
+
+func determineMolecularMass(elem []element, atomicNumber []int, atomCounts map[int]int) float64 {
+	var result float64
+	result = 0.0
+	for elemtNum, numberOfAtoms := range(atomCounts) {
+		result += elem[atomicNumber[elemtNum]].relativeAtomicMass * float64(numberOfAtoms)
+	}
+	return result
 }
 
 func testMain() {
@@ -215,6 +339,14 @@ func testMain() {
 	fmt.Println("O", elem[symbol["O"]])
 	fmt.Println("C", elem[symbol["C"]])
 	fmt.Println("Si", elem[symbol["Si"]])
+	testFormula := parseFormula(elem, symbol, "2Hg + O2")
+	fmt.Println("2Hg + O2 formula", testFormula)
+	testFormula = parseFormula(elem, symbol, "7H2SO4 + 2Hg + O2")
+	fmt.Println("7H2SO4 + 2Hg + O2 formula", testFormula)
+	atomCounts := countFormulaAtoms(testFormula)
+	fmt.Println("atomCounts", atomCounts)
+	molarMass := determineMolecularMass(elem, atomicNumber, atomCounts)
+	fmt.Println("molarMass",molarMass)
 }
 
 func main() {
@@ -223,17 +355,53 @@ func main() {
 	isos := constructIsotopeRelativeMassesTable()
 	// fmt.Println("iso",isos)
 
-	isolookup := makeIsotopicMassesTableIndexes(isos) 
+	isolookup := makeIsotopicMassesTableIndexes(isos)
 
-	fmt.Println("isolookup",isolookup)
+	fmt.Println("isolookup", isolookup) // qx_
 
-	fmt.Println(elem[atomicNumber[1]])
+	fmt.Println(elem[atomicNumber[1]]) // qx_
 
-	fmt.Println("Relative atomic mass of carbon (calculated from isotopes)", (isos[isolookup[elem[symbol["C"]].atomicNumber][12]].isotopicMass * isos[isolookup[elem[symbol["C"]].atomicNumber][12]].abundance) + (isos[isolookup[elem[symbol["C"]].atomicNumber][13]].isotopicMass * isos[isolookup[elem[symbol["C"]].atomicNumber][13]].abundance) )
+	massOfOCompoundA := 0.22564
+	fmt.Println("E1.1 Law of multiple proportions: B", 0.90255/massOfOCompoundA, "C", 1.3539/massOfOCompoundA, "D", 1.5795/massOfOCompoundA)
 
-	fmt.Println("Relative atomic mass of carbon (from table)", elem[symbol["C"]].relativeAtomicMass)
+	fmt.Println("E1.2 Number of electrons, protons, and neutrons in 222Rn (Radon-222):", elem[symbol["Rn"]].atomicNumber, elem[symbol["Rn"]].atomicNumber, 222-elem[symbol["Rn"]].atomicNumber)
 
-	fmt.Println("Relative molecular mass of water:", (2*elem[symbol["H"]].relativeAtomicMass)+elem[symbol["O"]].relativeAtomicMass)
+	fmt.Println("E1.3 Relative atomic mass of carbon (calculated from isotopes)", (isos[isolookup[elem[symbol["C"]].atomicNumber][12]].isotopicMass*isos[isolookup[elem[symbol["C"]].atomicNumber][12]].abundance)+(isos[isolookup[elem[symbol["C"]].atomicNumber][13]].isotopicMass*isos[isolookup[elem[symbol["C"]].atomicNumber][13]].abundance))
 
-	fmt.Println("Mass of one uranium atom:", elem[symbol["U"]].relativeAtomicMass/avogadrosNumber)
+	fmt.Println("E1.3 Relative atomic mass of carbon (from table)", elem[symbol["C"]].relativeAtomicMass)
+
+	fmt.Println("Relative molecular mass of water:", (elem[symbol["H"]].relativeAtomicMass*2)+elem[symbol["O"]].relativeAtomicMass)
+
+	fmt.Println("Mass of a single 12C atom:", elem[symbol["C"]].relativeAtomicMass/avogadrosNumber, "g")
+
+	fmt.Println("Ratio of mass of sodium atom (Na) to carbon atom (C)", elem[symbol["Na"]].relativeAtomicMass/elem[symbol["C"]].relativeAtomicMass)
+
+	fmt.Println("E1.4 Mass of one uranium atom:", elem[symbol["U"]].relativeAtomicMass/avogadrosNumber, "g")
+
+	fmt.Println("Chemical amount of iron in 8.232g:", 8.232/elem[symbol["Fe"]].relativeAtomicMass, "mol")
+
+	molarMassOfWater := (elem[symbol["H"]].relativeAtomicMass * 2) + elem[symbol["O"]].relativeAtomicMass
+	fmt.Println("Amount of water needed for 0.2000 mol:", 0.2*molarMassOfWater, "g")
+
+	molarMassOfNO2 := elem[symbol["N"]].relativeAtomicMass + (elem[symbol["O"]].relativeAtomicMass * 2)
+	fmt.Println("E1.5a chemical amount of NO2 in 4.00 g of NO2:", 4.0/molarMassOfNO2, "mol")
+	fmt.Println("E1.5b number of molecules of NO2:", (4.0/molarMassOfNO2)*avogadrosNumber)
+
+	liquidBenzeneDensity := 0.8765 // in g/cm^3
+	fmt.Println("Liquid benzene mass:", (0.2124*cm3perL)*liquidBenzeneDensity, "g")
+	molecularMassBenzene := (elem[symbol["C"]].relativeAtomicMass * 6) + (elem[symbol["H"]].relativeAtomicMass * 6)
+	fmt.Println("Molecular mass of benzene:",molecularMassBenzene)
+	fmt.Println("Chemical amount of benzene:", ((0.2124*cm3perL)*liquidBenzeneDensity)/molecularMassBenzene, "mol")
+
+	iceDensityNear0C := 0.92 // in g/cm^3
+	fmt.Println("Molar volume of solid water (ice):", molarMassOfWater/iceDensityNear0C, "cm^3/mol")
+
+	oxygenDensityRoomTempSeaLevel := 0.00130 // in g/cm^3
+	fmt.Println("Molar volume of oxygen (O2) at room temperature:", ((elem[symbol["O"]].relativeAtomicMass*2)/oxygenDensityRoomTempSeaLevel)/cm3perL, "L/mol")
+
+	fmt.Println("Volume per H2O molecule for solid water (ice):", (molarMassOfWater/avogadrosNumber)/iceDensityNear0C)
+
+	fmt.Println("Molecular mass of water from formula:", determineMolecularMass(elem, atomicNumber, countFormulaAtoms(parseFormula(elem, symbol, "H2O"))))
+	fmt.Println("Molecular mass of benzene from formula:", determineMolecularMass(elem, atomicNumber, countFormulaAtoms(parseFormula(elem, symbol, "C6H6"))))
+
 }
